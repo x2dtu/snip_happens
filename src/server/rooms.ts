@@ -27,6 +27,9 @@ interface Room {
 const AI_NAMES = ["Sparky", "Fuse", "Pliers", "Volt", "Tinker", "Ohm", "Bolt"];
 const AI_DELAY_MS = 1100;
 const ROOM_TTL_MS = 60 * 60 * 1000;
+// Caps so a public deployment can't be filled up with junk rooms.
+const MAX_ROOMS = 300;
+const MAX_ROOMS_PER_CONNECTION = 5;
 
 const rooms = new Map<string, Room>();
 
@@ -120,6 +123,10 @@ export function registerRooms(io: Server) {
 
     socket.on("room:create", (msg: { name?: unknown; token?: unknown }, ack) => {
       if (!validToken(msg?.token)) return reply(ack, { error: "Bad session." });
+      const created = (socket.data.roomsCreated as number | undefined) ?? 0;
+      if (created >= MAX_ROOMS_PER_CONNECTION) return reply(ack, { error: "You've created too many rooms. Reload to try again." });
+      if (rooms.size >= MAX_ROOMS) return reply(ack, { error: "The server is full right now. Try again later." });
+      socket.data.roomsCreated = created + 1;
       const code = newCode();
       const room: Room = {
         code,

@@ -1,0 +1,17 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Free web service. It sleeps after ~15 minutes idle, and in-memory rooms are lost when it does.
+services:
+  - type: web
+    name: snip-happens
+    runtime: node
+    plan: free
+    # Must stay a single instance: game rooms live in this process's memory.
+    numInstances: 1
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: NODE_VERSION
+        value: "20"

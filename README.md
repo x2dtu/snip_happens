@@ -21,6 +21,16 @@ Create a room, add AI teammates and/or share the 4-letter code, then start the m
 
 The server listens on `127.0.0.1` only, so nobody else on your network can reach it by default. There's no login: anyone who can reach the server can create or join rooms. To play with people on other machines, prefer an SSH tunnel (`ssh -L 3000:127.0.0.1:3000 you@host`). Setting `HOST=0.0.0.0` exposes the game to everyone who can reach your machine, so only do that on a network you trust.
 
+## Deploying (free, on Render)
+
+The app needs a long-running Node process for WebSockets, so it can't run on Vercel's serverless functions. Render's free web service works as-is:
+
+1. Push this repo to GitHub.
+2. In Render, choose **New → Blueprint** and pick the repo. It reads `render.yaml`.
+3. Open the `onrender.com` URL and share room links from there.
+
+Free instances sleep after about 15 minutes idle, and the first visit after that takes 30–60s to wake. Rooms live in memory, so they're cleared on sleep or redeploy. Keep it to a single instance. The game has no accounts, so anyone with the URL can create or join rooms. Room creation is capped to limit abuse.
+
 ## Layout
 
 | Path | What |
