@@ -13,6 +13,8 @@ export default function Game({ update }: { update: RoomUpdate }) {
   const me = view.you;
   const [mode, setMode] = useState<Mode>("cut");
   const [sel, setSel] = useState<{ target: number; wires: number[] } | null>(null);
+  // Which of your own wires you're calling with. Local-only: never sent until the cut is submitted.
+  const [myWire, setMyWire] = useState<number | null>(null);
   const [error, setError] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -26,6 +28,7 @@ export default function Game({ update }: { update: RoomUpdate }) {
   // Reset selection whenever the turn changes.
   useEffect(() => {
     setSel(null);
+    setMyWire(null);
     setError("");
     if (view.players[me]?.probeUsed) setMode("cut");
   }, [view.turn, view.phase, view.pending, me, view.players]);
@@ -39,6 +42,15 @@ export default function Game({ update }: { update: RoomUpdate }) {
     const res = await emitAck("game:action", action);
     if (res.error) setError(res.error);
     setSel(null);
+    setMyWire(null);
+  }
+
+  /** Sends the cut once both halves (teammate wire(s) + your wire) are chosen, in either order. */
+  function trySend(nextSel: typeof sel, nextMine: number | null) {
+    const complete = !!nextSel && (mode === "cut" ? nextSel.wires.length === 1 : nextSel.wires.length === 2);
+    if (!complete || nextMine === null) return;
+    if (mode === "cut") void send({ type: "dualCut", target: nextSel!.target, wire: nextSel!.wires[0], myWire: nextMine });
+    else void send({ type: "twinProbe", target: nextSel!.target, wires: [nextSel!.wires[0], nextSel!.wires[1]], myWire: nextMine });
   }
 
   function clickWire(player: number, wire: number) {
@@ -53,22 +65,22 @@ export default function Game({ update }: { update: RoomUpdate }) {
       return;
     }
     if (player === me) {
-      // Second step: click one of your own wires to call its value (and choose which copy gets cut).
-      if (ready && !w.cut && w.color !== "red") {
-        if (mode === "cut") void send({ type: "dualCut", target: sel!.target, wire: sel!.wires[0], myWire: wire });
-        else void send({ type: "twinProbe", target: sel!.target, wires: [sel!.wires[0], sel!.wires[1]], myWire: wire });
-      }
+      // Your own wire: its value is the call, and it's the copy cut on success.
+      if (w.cut || w.color === "red") return;
+      const next = myWire === wire ? null : wire;
+      setMyWire(next);
+      trySend(sel, next);
       return;
     }
     if (w.cut) return;
-    if (mode === "cut") {
-      setSel({ target: player, wires: [wire] });
-      return;
-    }
+    let next: { target: number; wires: number[] };
+    if (mode === "cut") next = { target: player, wires: [wire] };
     // Twin probe: two wires on the same teammate.
-    if (!sel || sel.target !== player) return setSel({ target: player, wires: [wire] });
-    if (sel.wires.includes(wire)) return setSel({ target: player, wires: sel.wires.filter((x) => x !== wire) });
-    setSel({ target: player, wires: [...sel.wires.slice(-1), wire] });
+    else if (!sel || sel.target !== player) next = { target: player, wires: [wire] };
+    else if (sel.wires.includes(wire)) next = { target: player, wires: sel.wires.filter((x) => x !== wire) };
+    else next = { target: player, wires: [...sel.wires.slice(-1), wire] };
+    setSel(next);
+    trySend(next, myWire);
   }
 
   const ready = !!sel && (mode === "cut" ? sel.wires.length === 1 : sel.wires.length === 2);
@@ -88,7 +100,13 @@ export default function Game({ update }: { update: RoomUpdate }) {
         : "Pick which probed wire gets the info token.";
   else if (myMove && view.phase === "opening") prompt = "Pick one of your blue wires to show with an info token.";
   else if (myMove && ready) prompt = "Now click one of your own wires to call its value.";
-  else if (myMove) prompt = mode === "probe" ? "Twin probe: pick two wires on one teammate." : "Your turn: pick a teammate's wire.";
+  else if (myMove && myWire !== null)
+    prompt = mode === "probe" ? "Now pick two wires on one teammate." : "Now pick a teammate's wire to cut.";
+  else if (myMove)
+    prompt =
+      mode === "probe"
+        ? "Twin probe: pick two wires on one teammate and one of your own wires, in any order."
+        : "Your turn: pick a teammate's wire and one of your own wires, in any order.";
   else if (me < 0) prompt = `Spectating. Waiting on ${view.players[actor].name}…`;
   else prompt = `Waiting on ${view.players[actor].name}…`;
 
@@ -114,17 +132,18 @@ export default function Game({ update }: { update: RoomUpdate }) {
 
       {me >= 0 && (
         <section className="mine">
-          <Stand view={view} player={me} sel={sel} onClick={clickWire} actor={actor} mine callable={myMove && !myPending && ready} />
+          <Stand view={view} player={me} sel={sel} onClick={clickWire} actor={actor} mine callable={myMove && !myPending && view.phase === "playing" && myWire === null}
+            ownSel={myWire} />
           {myMove && view.phase === "playing" && !myPending && (
             <div className="controls">
               <div className="modes">
-                <button className={mode === "cut" ? "active" : ""} onClick={() => (setMode("cut"), setSel(null))}>
+                <button className={mode === "cut" ? "active" : ""} onClick={() => (setMode("cut"), setSel(null), setMyWire(null))}>
                   ✂️ Dual cut
                 </button>
                 <button
                   className={mode === "probe" ? "active" : ""}
                   disabled={view.players[me].probeUsed}
-                  onClick={() => (setMode("probe"), setSel(null))}
+                  onClick={() => (setMode("probe"), setSel(null), setMyWire(null))}
                   title="Once per mission: point at two wires with one call"
                 >
                   🔍 Twin probe {view.players[me].probeUsed && "(used)"}
@@ -141,9 +160,8 @@ export default function Game({ update }: { update: RoomUpdate }) {
                 )}
               </div>
               <p className="muted hint">
-                {ready
-                  ? "Your highlighted wires are the ones you can call. Only you see which one you pick, and it's only revealed if the cut succeeds."
-                  : "Select a teammate's wire first."}
+                Only you see which of your wires you pick; it&apos;s only revealed if the cut succeeds. Click a selected wire again to
+                deselect it.
               </p>
             </div>
           )}
@@ -275,6 +293,7 @@ function Stand({
   actor,
   mine,
   callable,
+  ownSel,
 }: {
   view: GameView;
   player: number;
@@ -283,6 +302,7 @@ function Stand({
   actor: number;
   mine?: boolean;
   callable?: boolean;
+  ownSel?: number | null;
 }) {
   const p = view.players[player];
   const hl = new Map<number, Highlight["tone"]>();
@@ -306,7 +326,7 @@ function Stand({
             key={w.id}
             w={w}
             tone={hl.get(i)}
-            selected={!!sel && sel.target === player && sel.wires.includes(i)}
+            selected={(!!sel && sel.target === player && sel.wires.includes(i)) || (!!mine && ownSel === i)}
             pending={pendingWires.includes(i)}
             callable={!!callable && !w.cut && w.color !== "red"}
             onClick={() => onClick(player, i)}
