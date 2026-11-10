@@ -1,6 +1,7 @@
 "use client";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { emitAck, getSocket } from "../../../src/client/socket";
+import { boardName, boardsNeedingToken } from "../../../src/game/engine";
 import { canRevealReds, provableSoloCuts } from "../../../src/game/helpers";
 import type { Action, GameView, Highlight, WireView } from "../../../src/game/types";
 import type { RoomUpdate } from "../../../src/server/protocol";
@@ -75,8 +76,9 @@ export default function Game({ update }: { update: RoomUpdate }) {
     if (w.cut) return;
     let next: { target: number; wires: number[] };
     if (mode === "cut") next = { target: player, wires: [wire] };
-    // Twin probe: two wires on the same teammate.
-    else if (!sel || sel.target !== player) next = { target: player, wires: [wire] };
+    // Twin probe: both wires on the same board.
+    else if (!sel || sel.target !== player || view.players[player].wires[sel.wires[0]]?.stand !== w.stand)
+      next = { target: player, wires: [wire] };
     else if (sel.wires.includes(wire)) next = { target: player, wires: sel.wires.filter((x) => x !== wire) };
     else next = { target: player, wires: [...sel.wires.slice(-1), wire] };
     setSel(next);
@@ -98,7 +100,11 @@ export default function Game({ update }: { update: RoomUpdate }) {
       view.pending!.kind === "probeReveal"
         ? "Both probed wires match. Pick which one to reveal."
         : "Pick which probed wire gets the info token.";
-  else if (myMove && view.phase === "opening") prompt = "Pick one of your blue wires to show with an info token.";
+  else if (myMove && view.phase === "opening")
+    prompt =
+      view.players[me].stands > 1
+        ? `Pick a blue wire on board ${boardsNeedingToken(view.players[me]).map(boardName).join(" / ")} to show with an info token.`
+        : "Pick one of your blue wires to show with an info token.";
   else if (myMove && ready) prompt = "Now click one of your own wires to call its value.";
   else if (myMove && myWire !== null)
     prompt = mode === "probe" ? "Now pick two wires on one teammate." : "Now pick a teammate's wire to cut.";
@@ -320,17 +326,26 @@ function Stand({
         {p.probeUsed && <span className="tag dim">probe used</span>}
         <span className="muted">{left} left</span>
       </div>
-      <div className="wires">
-        {p.wires.map((w, i) => (
-          <WireTile
-            key={w.id}
-            w={w}
-            tone={hl.get(i)}
-            selected={(!!sel && sel.target === player && sel.wires.includes(i)) || (!!mine && ownSel === i)}
-            pending={pendingWires.includes(i)}
-            callable={!!callable && !w.cut && w.color !== "red"}
-            onClick={() => onClick(player, i)}
-          />
+      <div className="boards">
+        {Array.from({ length: p.stands }, (_, st) => (
+          <div key={st} className="board-row">
+            {p.stands > 1 && <span className="board-label">{boardName(st)}</span>}
+            <div className="wires">
+              {p.wires.map((w, i) =>
+                w.stand !== st ? null : (
+                  <WireTile
+                    key={w.id}
+                    w={w}
+                    tone={hl.get(i)}
+                    selected={(!!sel && sel.target === player && sel.wires.includes(i)) || (!!mine && ownSel === i)}
+                    pending={pendingWires.includes(i)}
+                    callable={!!callable && !w.cut && w.color !== "red"}
+                    onClick={() => onClick(player, i)}
+                  />
+                ),
+              )}
+            </div>
+          </div>
         ))}
       </div>
     </div>

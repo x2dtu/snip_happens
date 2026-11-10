@@ -78,22 +78,31 @@ export function createGame(
   for (const v of shuffle(redCandidates, rand).slice(0, s.redCount)) values.push({ value: v, color: "red" });
 
   const deck = shuffle(values, rand);
+  const n = seats.length;
+  // Two players each run two boards, so the bomb is laid out like a four-player game.
+  const standsPer = n === 2 ? 2 : 1;
   const players: PlayerState[] = seats.map((seat) => ({
     name: seat.name,
     kind: seat.kind,
     wires: [],
+    stands: standsPer,
     probeUsed: false,
   }));
-  // Deal starting from the captain so the extra wires (if any) go round evenly.
+  // Deal board by board starting from the captain so any extra wires go round evenly.
+  // Board k belongs to player k % n (its local board index is floor(k / n)).
+  const boards: Wire[][] = Array.from({ length: n * standsPer }, () => []);
   deck.forEach((w, i) => {
-    const p = (captain + i) % players.length;
-    players[p].wires.push({ id: 0, value: w.value, color: w.color, cut: false, info: null });
+    const k = (captain + i) % boards.length;
+    boards[k].push({ id: 0, value: w.value, color: w.color, cut: false, info: null, stand: Math.floor(k / n) });
   });
   let id = 0;
-  for (const p of players) {
-    p.wires.sort((a, b) => a.value - b.value);
+  players.forEach((p, pi) => {
+    for (let st = 0; st < standsPer; st++) {
+      const board = boards[st * n + pi].sort((a, b) => a.value - b.value);
+      p.wires.push(...board);
+    }
     for (const w of p.wires) w.id = id++;
-  }
+  });
 
   return {
     phase: "opening",
@@ -109,7 +118,9 @@ export function createGame(
       `Mission started. ${players[captain].name} is the captain.`,
       ...describeColor("yellow", yellowCandidates, s.yellowCount),
       ...describeColor("red", redCandidates, s.redCount),
-      `Each player places one info token on a blue wire.`,
+      standsPer > 1
+        ? `Each player runs two boards and places one info token on a blue wire on each board.`
+        : `Each player places one info token on a blue wire.`,
     ],
     highlights: [],
     lostReason: null,
@@ -127,6 +138,18 @@ function describeColor(color: string, cands: number[], inPlay: number): string[]
 }
 
 // ---------- helpers ----------
+
+export const boardName = (stand: number) => String.fromCharCode(65 + stand);
+
+/** Boards that still need their opening info token (boards with no blue wire are skipped). */
+export function boardsNeedingToken(p: { stands: number; wires: { stand: number; color?: string; info: InfoToken | null }[] }): number[] {
+  const out: number[] = [];
+  for (let st = 0; st < p.stands; st++) {
+    const ws = p.wires.filter((w) => w.stand === st);
+    if (ws.some((w) => w.color === "blue") && !ws.some((w) => w.info !== null)) out.push(st);
+  }
+  return out;
+}
 
 export function matches(w: Wire, call: Call): boolean {
   return call === "yellow" ? w.color === "yellow" : w.color === "blue" && w.value === call;
@@ -268,12 +291,14 @@ export function applyAction(state: GameState, actor: number, action: Action): st
     if (!isWireIndex(me, action.wire)) return "Bad wire.";
     const w = me.wires[action.wire];
     if (w.color !== "blue") return "Opening tokens go on a blue wire.";
+    if (!boardsNeedingToken(me).includes(w.stand)) return "That board already has its info token.";
     w.info = w.value;
     hl.push({ player: actor, wire: action.wire, tone: "info" });
-    log(state, `${me.name} shows a ${w.value}.`);
+    log(state, `${me.name} shows a ${w.value}${me.stands > 1 ? ` on board ${boardName(w.stand)}` : ""}.`);
     state.openingPlaced++;
     state.highlights = hl;
-    if (state.openingPlaced >= state.players.length) {
+    if (boardsNeedingToken(me).length > 0) return null; // same player places on their other board
+    if (state.players.every((p) => boardsNeedingToken(p).length === 0)) {
       state.phase = "playing";
       state.turn = state.captain;
       log(state, `Opening info is down. ${state.players[state.captain].name} goes first.`);
@@ -325,6 +350,7 @@ export function applyAction(state: GameState, actor: number, action: Action): st
       const [a, b] = wires;
       if (!isWireIndex(tp, a) || !isWireIndex(tp, b) || a === b) return "Pick two different wires.";
       if (tp.wires[a].cut || tp.wires[b].cut) return "Both wires must be uncut.";
+      if (tp.wires[a].stand !== tp.wires[b].stand) return "Both probed wires must be on the same board.";
       const call = callFromOwnWire(me, myWire);
       if (typeof call === "string" && call !== "yellow") return call;
       me.probeUsed = true;
@@ -420,10 +446,11 @@ export function viewFor(state: GameState, viewer: number): GameView {
       name: p.name,
       kind: p.kind,
       probeUsed: p.probeUsed,
+      stands: p.stands,
       wires: p.wires.map((w) =>
         w.cut || pi === viewer || over
-          ? { id: w.id, cut: w.cut, info: w.info, color: w.color, value: w.value }
-          : { id: w.id, cut: false, info: w.info },
+          ? { id: w.id, cut: w.cut, info: w.info, stand: w.stand, color: w.color, value: w.value }
+          : { id: w.id, cut: false, info: w.info, stand: w.stand },
       ),
     })),
     captain: state.captain,

@@ -101,6 +101,10 @@ code { background: #11131a; padding: 2px 6px; border-radius: 4px; }
 .stand-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .stand-head .muted { margin-left: auto; font-size: 0.85rem; }
 .pname { font-weight: 600; }
+.boards { display: flex; flex-direction: column; gap: 4px; }
+.board-row { display: flex; align-items: flex-end; gap: 8px; }
+.board-row + .board-row { border-top: 1px dashed #3a404c; padding-top: 2px; }
+.board-label { font-weight: 800; color: var(--muted); width: 14px; padding-bottom: 20px; }
 .wires { display: flex; gap: 5px; flex-wrap: wrap; padding-top: 14px; }
 .wire {
   position: relative; width: 40px; height: 60px; padding: 0; border-radius: 6px; border: 2px solid transparent;

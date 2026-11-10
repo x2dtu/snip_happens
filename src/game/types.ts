@@ -13,12 +13,17 @@ export interface Wire {
   color: WireColor;
   cut: boolean;
   info: InfoToken | null;
+  /** Which of the owner's boards (stands) this wire sits on. Each board is sorted on its own. */
+  stand: number;
 }
 
 export interface PlayerState {
   name: string;
   kind: "human" | "ai";
+  /** All of a player's wires, board 0 first then board 1; each board sorted ascending. */
   wires: Wire[];
+  /** Number of boards this player has (2 in a two-player game, otherwise 1). */
+  stands: number;
   probeUsed: boolean;
 }
 
@@ -83,6 +88,7 @@ export interface WireView {
   id: number;
   cut: boolean;
   info: InfoToken | null;
+  stand: number;
   color?: WireColor;
   value?: number;
 }
@@ -91,6 +97,7 @@ export interface PlayerView {
   name: string;
   kind: "human" | "ai";
   probeUsed: boolean;
+  stands: number;
   wires: WireView[];
 }
 

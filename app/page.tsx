@@ -67,6 +67,10 @@ export default function Home() {
           <li>Everyone shares one bomb. Its wires are dealt out and each stand is sorted low to high. You see only your own values.</li>
           <li>Before play, everyone shows one of their blue wires with an info token.</li>
           <li>
+            <b>Two players:</b> each player runs two boards, each sorted on its own and each with its own opening info
+            token. A twin probe must target two wires on the same board.
+          </li>
+          <li>
             <b>Dual cut:</b> point at a teammate&apos;s wire and call a value you hold. Right: both wires are cut. Wrong:
             the detonator ticks and an info token reveals that wire. Red: boom.
           </li>

@@ -1,4 +1,4 @@
-import { BLUE_VALUES } from "./engine";
+import { BLUE_VALUES, boardsNeedingToken } from "./engine";
 import { canRevealReds, heldCalls, matchesView, provableSoloCuts } from "./helpers";
 import type { Action, Call, GameView, WireColor } from "./types";
 
@@ -56,6 +56,11 @@ function buildSegments(view: GameView): Segment[] {
       cur = [];
     };
     p.wires.forEach((w, wi) => {
+      // Each board is sorted independently: a new board resets the bounds.
+      if (wi > 0 && p.wires[wi - 1].stand !== w.stand) {
+        flush(13);
+        lo = 0;
+      }
       const known = w.cut ? w.value! : typeof w.info === "number" ? w.info : null;
       if (known !== null) {
         flush(known);
@@ -75,7 +80,7 @@ function buildSegments(view: GameView): Segment[] {
     const p = view.players[s.player];
     const last = s.wires[s.wires.length - 1];
     let hi = 13;
-    for (let j = last + 1; j < p.wires.length; j++) {
+    for (let j = last + 1; j < p.wires.length && p.wires[j].stand === p.wires[last].stand; j++) {
       const w = p.wires[j];
       const k = w.cut ? w.value! : typeof w.info === "number" ? w.info : null;
       if (k !== null) {
@@ -223,8 +228,10 @@ export function chooseAction(view: GameView): Action | null {
   }
 
   if (view.phase === "opening") {
-    const blues = me.wires.map((w, i) => ({ w, i })).filter(({ w }) => w.color === "blue");
-    const mid = me.wires.length / 2;
+    const board = boardsNeedingToken(me)[0];
+    const onBoard = me.wires.map((w, i) => ({ w, i })).filter(({ w }) => w.stand === board);
+    const blues = onBoard.filter(({ w }) => w.color === "blue");
+    const mid = onBoard.length ? (onBoard[0].i + onBoard[onBoard.length - 1].i) / 2 : 0;
     const middling = blues.filter(({ w }) => w.value! >= 4 && w.value! <= 9);
     const choices = middling.length ? middling : blues;
     choices.sort((a, b) => Math.abs(a.i - mid) - Math.abs(b.i - mid));
@@ -276,7 +283,7 @@ export function chooseAction(view: GameView): Action | null {
       for (let a = 0; a < p.wires.length; a++) {
         if (p.wires[a].cut) continue;
         for (let c = a + 1; c < p.wires.length; c++) {
-          if (p.wires[c].cut) continue;
+          if (p.wires[c].cut || p.wires[c].stand !== p.wires[a].stand) continue;
           for (const call of calls) {
             const ck = callKey(call);
             let hits = 0;

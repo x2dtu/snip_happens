@@ -1,11 +1,14 @@
 // Smoke test against a running server: two "human" socket clients plus one AI play a full mission.
-// Usage: npm start (in another terminal), then: npx tsx scripts/e2e.ts [url]
+// Usage: npm start (in another terminal), then: npx tsx scripts/e2e.ts [--two] [url]
+//   --two: just the two humans (each running two boards), no AI.
 import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
 import { chooseAction } from "../src/game/ai";
 import type { RoomUpdate } from "../src/server/protocol";
 
-const url = process.argv[2] ?? "http://127.0.0.1:3000";
+const args = process.argv.slice(2);
+const twoPlayer = args.includes("--two");
+const url = args.find((a) => !a.startsWith("--")) ?? "http://127.0.0.1:3000";
 const ack = <T>(s: Socket, ev: string, payload?: unknown) => new Promise<T>((r) => s.emit(ev, payload, r));
 
 async function main() {
@@ -18,7 +21,7 @@ async function main() {
   console.log("room", code);
   await ack(host, "room:join", { code, name: "Alice", token: hostTok });
   await ack(guest, "room:join", { code, name: "Bob", token: guestTok });
-  host.emit("room:addAi");
+  if (!twoPlayer) host.emit("room:addAi");
   host.emit("room:settings", { yellowCount: 2, yellowDrawn: 3, redCount: 1, redDrawn: 2 });
 
   // Guest must not be able to start or change settings.

@@ -13,6 +13,8 @@ npm run dev        # http://127.0.0.1:3000
 
 Production: `npm run build && npm start`.
 
+In a two-player game each player runs two boards (laid out like a four-player game), and each board gets its own opening info token.
+
 Create a room, add AI teammates and/or share the 4-letter code, then start the mission. Each browser tab is its own player, so you can test multiplayer by opening several tabs.
 
 ## Playing with friends
@@ -29,7 +31,7 @@ The server listens on `127.0.0.1` only, so nobody else on your network can reach
 | `server.ts` | Custom Next.js + Socket.IO server |
 | `app/` | Next.js UI (home, lobby, game board) |
 | `scripts/simulate.ts` | `npm run simulate [n]`: AI-only games to sanity-check the engine and AI |
-| `scripts/e2e.ts` | `npm run e2e` (with the server running): two socket clients + one AI play a full mission, checking that hidden wires never leak |
+| `scripts/e2e.ts` | `npm run e2e [-- --two]` (with the server running): two socket clients + one AI play a full mission, checking that hidden wires never leak |
 
 ## Not implemented yet
 
