@@ -22,7 +22,7 @@ async function main() {
   await ack(host, "room:join", { code, name: "Alice", token: hostTok });
   await ack(guest, "room:join", { code, name: "Bob", token: guestTok });
   if (!twoPlayer) host.emit("room:addAi");
-  host.emit("room:settings", { yellowCount: 2, yellowDrawn: 3, redCount: 1, redDrawn: 2 });
+  host.emit("room:settings", { yellowCount: 2, yellowDrawn: 3, redCount: 1, redDrawn: 2, equipmentCount: 6 });
 
   // Guest must not be able to start or change settings.
   const denied = await ack<{ error?: string }>(guest, "room:start");

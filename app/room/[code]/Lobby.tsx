@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { emitAck, getSocket } from "../../../src/client/socket";
-import { MAX_DRAWN, MAX_PLAYERS, MAX_RED, MAX_YELLOW, MIN_PLAYERS, PRESETS } from "../../../src/game/engine";
+import { MAX_DRAWN, MAX_EQUIPMENT, MAX_PLAYERS, MAX_RED, MAX_YELLOW, MIN_PLAYERS, PRESETS } from "../../../src/game/engine";
 import type { LobbyView } from "../../../src/server/protocol";
 
 export default function Lobby({ lobby }: { lobby: LobbyView }) {
@@ -57,9 +57,9 @@ export default function Lobby({ lobby }: { lobby: LobbyView }) {
         {isHost ? (
           <div className="presets">
             {PRESETS.map((p) => {
-              const active = (Object.keys(p.settings) as (keyof typeof settings)[]).every((k) => p.settings[k] === settings[k]);
+              const active = (["yellowCount", "yellowDrawn", "redCount", "redDrawn"] as const).every((k) => p.settings[k] === settings[k]);
               return (
-                <button key={p.name} className={active ? "preset active" : "preset"} onClick={() => socket.emit("room:settings", p.settings)}>
+                <button key={p.name} className={active ? "preset active" : "preset"} onClick={() => socket.emit("room:settings", { ...p.settings, equipmentCount: settings.equipmentCount })}>
                   <b>{p.name}</b>
                   <span>{p.description}</span>
                 </button>
@@ -80,11 +80,22 @@ export default function Lobby({ lobby }: { lobby: LobbyView }) {
                 maxCount={MAX_RED}
                 onChange={(redCount, redDrawn) => socket.emit("room:settings", { ...settings, redCount, redDrawn })}
               />
+              <div className="row count-pair">
+                <span>Equipment:</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={MAX_EQUIPMENT}
+                  value={settings.equipmentCount}
+                  onChange={(e) => socket.emit("room:settings", { ...settings, equipmentCount: Number(e.target.value) })}
+                />
+                <span className="muted">cards drawn at random (0–{MAX_EQUIPMENT})</span>
+              </div>
             </div>
           </div>
         ) : (
           <p>
-            48 blue, {describe(settings.yellowCount, settings.yellowDrawn)} yellow, {describe(settings.redCount, settings.redDrawn)} red wires. Waiting for the host to start…
+            48 blue, {describe(settings.yellowCount, settings.yellowDrawn)} yellow, {describe(settings.redCount, settings.redDrawn)} red wires, {settings.equipmentCount} equipment. Waiting for the host to start…
           </p>
         )}
 

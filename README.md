@@ -40,10 +40,19 @@ Free instances sleep after about 15 minutes idle, and the first visit after that
 | `src/server/rooms.ts` | Socket.IO rooms, seats, AI turn scheduling |
 | `server.ts` | Custom Next.js + Socket.IO server |
 | `app/` | Next.js UI (home, lobby, game board) |
-| `scripts/simulate.ts` | `npm run simulate [n]`: AI-only games to sanity-check the engine and AI |
+| `scripts/simulate.ts` | `npm run simulate [n] [-- --equipment]`: AI-only games to sanity-check the engine and AI |
+| `scripts/equipment-test.ts` | `npm test`: rules tests for every equipment card |
 | `scripts/e2e.ts` | `npm run e2e [-- --two]` (with the server running): two socket clients + one AI play a full mission, checking that hidden wires never leak |
+
+## Equipment
+
+The host can draw up to 6 of the 12 equipment cards (`src/game/equipment.ts`). A card unlocks once two blue wires of its number are cut, and each card is single use. Cards whose text says "during a Dual Cut" or "your turn" (3, 5, 9, 10, 11) can only be used on your own turn. Anyone can use the rest at any time unless a choice is pending.
+
+House rulings where the card text is open:
+- Triple/Super Detector misses work like the twin probe: the info token goes on a blue wire if there is one, otherwise a yellow, and the teammate picks if several qualify. Detectors never trigger a red wire.
+- Stabilizer: a red wire hit while stabilized is revealed safely, and a miss still places its info token.
+- Walkie-Talkies: info tokens move with the wire, and = / ≠ labels on swapped wires are removed.
 
 ## Not implemented yet
 
-- Equipment cards and a numbered mission campaign (rules.md doesn't specify their effects). The lobby offers wire-mix presets instead.
-- "X out of Y" hidden wire setups.
+- A numbered mission campaign. The lobby offers wire-mix presets instead.

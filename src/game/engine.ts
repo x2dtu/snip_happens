@@ -1,3 +1,4 @@
+import { EQUIPMENT, equipmentInfo, ON_YOUR_TURN } from "./equipment";
 import type {
   Action,
   Call,
@@ -7,6 +8,7 @@ import type {
   Highlight,
   InfoToken,
   PlayerState,
+  RadarResult,
   Wire,
 } from "./types";
 
@@ -17,11 +19,12 @@ export const COPIES_PER_BLUE = 4;
 export const YELLOW_POOL = [1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1, 10.1, 11.1];
 export const RED_POOL = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5];
 
-const S = (yellowCount: number, yellowDrawn: number, redCount: number, redDrawn: number): GameSettings => ({
+const S = (yellowCount: number, yellowDrawn: number, redCount: number, redDrawn: number, equipmentCount = 0): GameSettings => ({
   yellowCount,
   yellowDrawn,
   redCount,
   redDrawn,
+  equipmentCount,
 });
 
 export const PRESETS: { name: string; description: string; settings: GameSettings }[] = [
@@ -36,6 +39,7 @@ export const PRESETS: { name: string; description: string; settings: GameSetting
 export const MAX_YELLOW = 4;
 export const MAX_RED = 3;
 export const MAX_DRAWN = 6;
+export const MAX_EQUIPMENT = 6;
 
 export function clampSettings(s: Partial<GameSettings>): GameSettings {
   const clamp = (n: unknown, lo: number, hi: number) =>
@@ -47,6 +51,7 @@ export function clampSettings(s: Partial<GameSettings>): GameSettings {
     yellowDrawn: clamp(s.yellowDrawn ?? yellowCount, yellowCount, Math.max(yellowCount, MAX_DRAWN)),
     redCount,
     redDrawn: clamp(s.redDrawn ?? redCount, redCount, Math.max(redCount, MAX_DRAWN)),
+    equipmentCount: clamp(s.equipmentCount ?? 0, 0, MAX_EQUIPMENT),
   };
 }
 
@@ -126,6 +131,13 @@ export function createGame(
     lostReason: null,
     yellowCandidates: yellowCandidates.sort((a, b) => a - b),
     redCandidates: redCandidates.sort((a, b) => a - b),
+    equipment: shuffle(EQUIPMENT.map((e) => e.wire), rand)
+      .slice(0, s.equipmentCount)
+      .sort((a, b) => a - b)
+      .map((card) => ({ card, used: false })),
+    labels: [],
+    radar: [],
+    stabilized: false,
   };
 }
 
@@ -248,43 +260,272 @@ function cutActorWire(state: GameState, actor: number, i: number, hl: Highlight[
 }
 
 function finishTurn(state: GameState) {
+  state.stabilized = false;
   if (state.phase !== "playing") return;
   if (!checkWin(state)) advanceTurn(state);
 }
 
+// ---------- equipment helpers ----------
+
+/** Same-ness used by the = / ≠ labels: any two yellows (or two reds) count as identical. */
+function sameKind(a: Wire, b: Wire): boolean {
+  if (a.color !== b.color) return false;
+  return a.color === "blue" ? a.value === b.value : true;
+}
+
+function equipmentCard(state: GameState, card: number) {
+  return state.equipment.find((e) => e.card === card);
+}
+
+export function isUnlocked(blueCut: number[], card: number): boolean {
+  return blueCut[card] >= 2;
+}
+
+function blueCutCounts(state: GameState): number[] {
+  const c = new Array(13).fill(0);
+  for (const p of state.players) for (const w of p.wires) if (w.cut && w.color === "blue") c[w.value]++;
+  return c;
+}
+
+/** Validates that equipment `card` is in play, unlocked and unused. */
+function checkEquipment(state: GameState, card: number): string | null {
+  const e = equipmentCard(state, card);
+  if (!e) return "That equipment isn't in this mission.";
+  if (e.used) return "That equipment has already been used.";
+  if (!isUnlocked(blueCutCounts(state), card)) return `Equipment ${card} unlocks once two blue ${card}s are cut.`;
+  return null;
+}
+
+function useEquipment(state: GameState, card: number) {
+  equipmentCard(state, card)!.used = true;
+}
+
+const isPlayer = (state: GameState, p: unknown): p is number =>
+  Number.isInteger(p) && (p as number) >= 0 && (p as number) < state.players.length;
+
+/** Index range [start, end) of a board within a player's wire list. */
+function boardRange(p: PlayerState, stand: number): [number, number] {
+  const start = p.wires.findIndex((w) => w.stand === stand);
+  let end = start;
+  while (end < p.wires.length && p.wires[end].stand === stand) end++;
+  return [start, end];
+}
+
+/** Puts info on the best candidate after a missed probe (blue first, then yellow; never red). */
+function probeMissToken(state: GameState, actor: number, target: number, wires: number[], hl: Highlight[]) {
+  const tp = state.players[target];
+  const blues = wires.filter((i) => tp.wires[i].color === "blue");
+  const yellows = wires.filter((i) => tp.wires[i].color === "yellow");
+  const cands = blues.length ? blues : yellows;
+  if (cands.length === 0) {
+    log(state, "None of the probed wires can take an info token.");
+  } else if (cands.length === 1) {
+    const w = tp.wires[cands[0]];
+    w.info = tokenFor(w);
+    hl.push({ player: target, wire: cands[0], tone: "info" });
+    log(state, `An info token (${w.info}) goes on one of the probed wires.`);
+  } else {
+    state.pending = { kind: "probeInfo", actor, target, wires: cands };
+    log(state, `${tp.name} chooses which probed wire gets an info token.`);
+  }
+}
+
+/** A failed cut: ticks the detonator unless the Stabilizer is active. Returns true if the game ended. */
+function failedCut(state: GameState): boolean {
+  if (state.stabilized) {
+    log(state, "The Stabilizer holds. The detonator doesn't move.");
+    return false;
+  }
+  return addMistake(state);
+}
+
 // ---------- actions ----------
+
+function validTarget(state: GameState, actor: number, target: unknown): target is number {
+  return isPlayer(state, target) && target !== actor;
+}
+
+function applyPending(state: GameState, actor: number, action: Action, hl: Highlight[]): string | null {
+  const pend = state.pending!;
+  if (action.type !== "choosePending") return "Finish the pending choice first.";
+  const me = state.players[actor];
+  if (!pend.wires.includes(action.wire)) return "Pick one of the highlighted wires.";
+  const w = me.wires[action.wire];
+  const actorName = state.players[pend.actor].name;
+  state.pending = null;
+
+  if (pend.kind === "probeReveal") {
+    w.cut = true;
+    hl.push({ player: actor, wire: action.wire, tone: "hit" });
+    const own = state.players[pend.actor];
+    const aw = pend.actorWire !== undefined && !own.wires[pend.actorWire].cut ? pend.actorWire : findMatch(own, pend.call);
+    cutActorWire(state, pend.actor, aw, hl);
+    log(state, `${me.name} reveals a ${wireLabel(w)}. ${actorName}'s probe hits.`);
+  } else if (pend.kind === "probeInfo") {
+    w.info = tokenFor(w);
+    hl.push({ player: actor, wire: action.wire, tone: "info" });
+    log(state, `${me.name} puts an info token (${w.info}) on one of the probed wires.`);
+  } else {
+    swapWires(state, pend.actor, pend.actorWire, actor, action.wire, hl);
+    // Walkie-Talkies can be used outside your turn, so the turn doesn't move.
+    state.highlights = hl;
+    return null;
+  }
+  state.highlights = hl;
+  finishTurn(state);
+  return null;
+}
+
+/** Walkie-Talkies: each wire goes onto the board the other one came from, then boards re-sort. */
+function swapWires(state: GameState, pa: number, ia: number, pb: number, ib: number, hl: Highlight[]) {
+  const A = state.players[pa];
+  const B = state.players[pb];
+  const wa = A.wires[ia];
+  const wb = B.wires[ib];
+  const [sa, sb] = [wa.stand, wb.stand];
+  A.wires[ia] = { ...wb, stand: sa };
+  B.wires[ib] = { ...wa, stand: sb };
+  for (const p of [A, B]) p.wires.sort((x, y) => x.stand - y.stand || x.value - y.value);
+  // Labels only make sense between wires that stayed together.
+  state.labels = state.labels.filter((l) => ![wa.id, wb.id].includes(l.a) && ![wa.id, wb.id].includes(l.b));
+  const na = A.wires.findIndex((w) => w.id === wb.id);
+  const nb = B.wires.findIndex((w) => w.id === wa.id);
+  hl.push({ player: pa, wire: na, tone: "info" }, { player: pb, wire: nb, tone: "info" });
+  log(
+    state,
+    `${A.name} and ${B.name} swap wires with the Walkie-Talkies. ${A.name}'s new wire is at position ${na + 1}, ${B.name}'s at position ${nb + 1}.`,
+  );
+}
+
+function applyEquipment(state: GameState, actor: number, action: Extract<Action, { type: "equipment" }>, hl: Highlight[]): string | null {
+  const me = state.players[actor];
+  const card = action.card;
+  const err = checkEquipment(state, card);
+  if (err) return err;
+  const title = equipmentInfo(card).title;
+  const myTurn = actor === state.turn;
+  if (ON_YOUR_TURN.has(card) && !myTurn) return `${title} can only be used on your turn.`;
+
+  switch (card) {
+    case 1:
+    case 12: {
+      const { wires } = action as { wires: [number, number] };
+      if (!Array.isArray(wires) || wires.length !== 2) return "Pick two of your adjacent wires.";
+      const [a, b] = [...wires].sort((x, y) => x - y);
+      if (!isWireIndex(me, a) || !isWireIndex(me, b) || b !== a + 1 || me.wires[a].stand !== me.wires[b].stand)
+        return "Pick two adjacent wires on the same board.";
+      const [wa, wb] = [me.wires[a], me.wires[b]];
+      if (wa.cut && wb.cut) return "At most one of the two wires can already be cut.";
+      const same = sameKind(wa, wb);
+      if (card === 12 && !same) return "Label = needs two wires of the same value.";
+      if (card === 1 && same) return "Label ≠ needs two wires of different values.";
+      useEquipment(state, card);
+      state.labels.push({ kind: card === 12 ? "eq" : "neq", a: wa.id, b: wb.id });
+      hl.push({ player: actor, wire: a, tone: "info" }, { player: actor, wire: b, tone: "info" });
+      log(state, `${me.name} uses ${title}: wires ${a + 1} and ${b + 1} are ${card === 12 ? "the same" : "different"}.`);
+      break;
+    }
+    case 2: {
+      const { target, myWire } = action as { target: number; myWire: number };
+      if (!validTarget(state, actor, target)) return "Pick a teammate to swap with.";
+      if (!isWireIndex(me, myWire) || me.wires[myWire].cut) return "Pick one of your uncut wires to give.";
+      const tp = state.players[target];
+      const theirs = tp.wires.map((w, i) => (w.cut ? -1 : i)).filter((i) => i >= 0);
+      if (!theirs.length) return "That teammate has no uncut wires.";
+      useEquipment(state, card);
+      state.pending = { kind: "walkie", actor, target, actorWire: myWire, wires: theirs };
+      hl.push({ player: actor, wire: myWire, tone: "info" });
+      log(state, `${me.name} uses ${title} with ${tp.name}, offering their wire at position ${myWire + 1}. ${tp.name} picks a wire to give back.`);
+      break;
+    }
+    case 4: {
+      const { wire } = action as { wire: number };
+      if (!isWireIndex(me, wire)) return "Pick one of your wires.";
+      const w = me.wires[wire];
+      if (w.cut || w.color !== "blue") return "Post-It goes on one of your uncut blue wires.";
+      if (w.info !== null) return "That wire already has an info token.";
+      useEquipment(state, card);
+      w.info = w.value;
+      hl.push({ player: actor, wire, tone: "info" });
+      log(state, `${me.name} uses ${title}: shows a ${w.value}.`);
+      break;
+    }
+    case 6: {
+      if (state.mistakes === 0) return "The detonator is already at the start.";
+      useEquipment(state, card);
+      state.mistakes--;
+      log(state, `${me.name} uses ${title}. The detonator moves back one step.`);
+      break;
+    }
+    case 7: {
+      const { players } = action as { players: number[] };
+      const list = Array.isArray(players) ? [...new Set(players)] : [];
+      if (list.length < 1 || list.length > 2) return "Pick one or two players.";
+      if (!list.every((p) => isPlayer(state, p) && state.players[p].probeUsed)) return "Only used twin probes can be recharged.";
+      useEquipment(state, card);
+      for (const p of list) state.players[p].probeUsed = false;
+      log(state, `${me.name} uses ${title}: ${list.map((p) => state.players[p].name).join(" and ")} get their twin probe back.`);
+      break;
+    }
+    case 8: {
+      const { value } = action as { value: number };
+      if (!Number.isInteger(value) || value < 1 || value > 12) return "Pick a value from 1 to 12.";
+      useEquipment(state, card);
+      const result: RadarResult = { value, boards: [] };
+      const parts: string[] = [];
+      state.players.forEach((p, pi) => {
+        for (let st = 0; st < p.stands; st++) {
+          const ws = p.wires.filter((w) => w.stand === st && !w.cut);
+          const yes = ws.some((w) => w.color === "blue" && w.value === value);
+          result.boards.push({ player: pi, stand: st, yes, wireIds: ws.map((w) => w.id) });
+          parts.push(`${p.name}${p.stands > 1 ? ` (${boardName(st)})` : ""}: ${yes ? "Yes!" : "no"}`);
+        }
+      });
+      state.radar.push(result);
+      log(state, `${me.name} uses ${title} on ${value}. ${parts.join(", ")}.`);
+      break;
+    }
+    case 9: {
+      if (state.stabilized) return "The Stabilizer is already active.";
+      useEquipment(state, card);
+      state.stabilized = true;
+      log(state, `${me.name} uses the ${title}. A failed cut this turn won't move the detonator or explode.`);
+      break;
+    }
+    case 11: {
+      const { next } = action as { next: number };
+      if (!validTarget(state, actor, next)) return "Pick another player to go next.";
+      if (!state.players[next].wires.some((w) => !w.cut)) return "That player has no wires left.";
+      useEquipment(state, card);
+      state.stabilized = false;
+      state.turn = next;
+      log(state, `${me.name} uses the ${title}, skipping their turn. ${state.players[next].name} goes next.`);
+      break;
+    }
+    default:
+      return "That equipment is used as part of a cut.";
+  }
+  state.highlights = hl;
+  return null;
+}
 
 /** Applies an action in place. Returns an error message, or null on success. */
 export function applyAction(state: GameState, actor: number, action: Action): string | null {
   if (state.phase === "won" || state.phase === "lost") return "The mission is over.";
   if (!action || typeof action !== "object") return "Bad action.";
-  if (actor !== actingPlayer(state)) return "It's not your move.";
+  if (!isPlayer(state, actor)) return "Bad player.";
   const me = state.players[actor];
   const hl: Highlight[] = [];
 
-  if (state.pending) {
-    if (action.type !== "choosePending") return "Pick one of the two highlighted wires.";
-    const pend = state.pending;
-    if (!pend.wires.includes(action.wire)) return "Pick one of the two highlighted wires.";
-    const w = me.wires[action.wire];
-    const actorName = state.players[pend.actor].name;
-    if (pend.kind === "probeReveal") {
-      w.cut = true;
-      hl.push({ player: actor, wire: action.wire, tone: "hit" });
-      const own = state.players[pend.actor];
-      const aw = pend.actorWire !== undefined && !own.wires[pend.actorWire].cut ? pend.actorWire : findMatch(own, pend.call);
-      cutActorWire(state, pend.actor, aw, hl);
-      log(state, `${me.name} reveals a ${wireLabel(w)}. ${actorName}'s twin probe hits.`);
-    } else {
-      w.info = tokenFor(w);
-      hl.push({ player: actor, wire: action.wire, tone: "info" });
-      log(state, `${me.name} puts an info token (${w.info}) on one of the probed wires.`);
-    }
-    state.pending = null;
-    state.highlights = hl;
-    finishTurn(state);
-    return null;
+  // Most equipment can be used by anyone at any time (outside setup and pending choices).
+  if (action.type === "equipment") {
+    if (state.phase !== "playing") return "Equipment can't be used during setup.";
+    if (state.pending) return "Wait for the pending choice to finish.";
+    return applyEquipment(state, actor, action, hl);
   }
+
+  if (actor !== actingPlayer(state)) return "It's not your move.";
+  if (state.pending) return applyPending(state, actor, action, hl);
 
   if (state.phase === "opening") {
     if (action.type !== "opening") return "Place your opening info token first.";
@@ -310,80 +551,100 @@ export function applyAction(state: GameState, actor: number, action: Action): st
 
   switch (action.type) {
     case "dualCut": {
-      const { target, wire, myWire } = action;
-      if (!Number.isInteger(target) || target < 0 || target >= state.players.length || target === actor)
-        return "Pick a teammate's wire.";
+      const { target, wire, myWire, myWire2 } = action;
+      if (!validTarget(state, actor, target)) return "Pick a teammate's wire.";
       const tp = state.players[target];
       if (!isWireIndex(tp, wire) || tp.wires[wire].cut) return "That wire is already cut.";
       const call = callFromOwnWire(me, myWire);
       if (typeof call === "string" && call !== "yellow") return call;
+      const calls: Call[] = [call];
+      const xray = myWire2 !== undefined;
+      if (xray) {
+        const err = checkEquipment(state, 10);
+        if (err) return err;
+        const call2 = callFromOwnWire(me, myWire2);
+        if (typeof call2 === "string" && call2 !== "yellow") return call2;
+        if (call2 === call) return "X or Y Ray needs two different values.";
+        calls.push(call2);
+        useEquipment(state, 10);
+      }
       const w = tp.wires[wire];
-      if (matches(w, call)) {
+      const said = calls.map(callLabel).join(" or ");
+      const hitIdx = calls.findIndex((c) => matches(w, c));
+      if (hitIdx >= 0) {
         w.cut = true;
         hl.push({ player: target, wire, tone: "hit" });
-        cutActorWire(state, actor, myWire, hl);
-        log(state, `${me.name} calls ${callLabel(call)} on ${tp.name}'s wire. Correct! It's a ${wireLabel(w)}.`);
+        cutActorWire(state, actor, hitIdx === 0 ? myWire : myWire2!, hl);
+        log(state, `${me.name} calls ${said}${xray ? " (X or Y Ray)" : ""} on ${tp.name}'s wire. Correct! It's a ${wireLabel(w)}.`);
       } else if (w.color === "red") {
         w.cut = true;
-        hl.push({ player: target, wire, tone: "boom" });
-        state.phase = "lost";
-        state.lostReason = `${me.name} cut a red wire.`;
-        log(state, `${me.name} calls ${callLabel(call)} on ${tp.name}'s wire. It's RED. 💥`);
+        if (state.stabilized) {
+          hl.push({ player: target, wire, tone: "info" });
+          log(state, `${me.name} calls ${said} on ${tp.name}'s wire. It's RED, but the Stabilizer holds and it's safely revealed.`);
+        } else {
+          hl.push({ player: target, wire, tone: "boom" });
+          state.phase = "lost";
+          state.lostReason = `${me.name} cut a red wire.`;
+          log(state, `${me.name} calls ${said} on ${tp.name}'s wire. It's RED. 💥`);
+        }
       } else {
         w.info = tokenFor(w);
         hl.push({ player: target, wire, tone: "miss" });
-        log(state, `${me.name} calls ${callLabel(call)} on ${tp.name}'s wire. Wrong, it's a ${w.info}. The detonator ticks.`);
-        addMistake(state);
+        log(state, `${me.name} calls ${said} on ${tp.name}'s wire. Wrong, it's a ${w.info}.${state.stabilized ? "" : " The detonator ticks."}`);
+        failedCut(state);
       }
       state.highlights = hl;
       finishTurn(state);
       return null;
     }
 
-    case "twinProbe": {
-      const { target, wires, myWire } = action;
-      if (me.probeUsed) return "You already used your twin probe.";
-      if (!Number.isInteger(target) || target < 0 || target >= state.players.length || target === actor)
-        return "Pick a teammate's wires.";
+    case "probe": {
+      const { device, target, myWire } = action;
+      if (!validTarget(state, actor, target)) return "Pick a teammate's wires.";
       const tp = state.players[target];
-      if (!Array.isArray(wires) || wires.length !== 2) return "Pick two wires.";
-      const [a, b] = wires;
-      if (!isWireIndex(tp, a) || !isWireIndex(tp, b) || a === b) return "Pick two different wires.";
-      if (tp.wires[a].cut || tp.wires[b].cut) return "Both wires must be uncut.";
-      if (tp.wires[a].stand !== tp.wires[b].stand) return "Both probed wires must be on the same board.";
       const call = callFromOwnWire(me, myWire);
       if (typeof call === "string" && call !== "yellow") return call;
-      me.probeUsed = true;
-      const wa = tp.wires[a];
-      const wb = tp.wires[b];
-      const hits = [a, b].filter((i) => matches(tp.wires[i], call));
-      const intro = `${me.name} uses the twin probe on two of ${tp.name}'s wires, calling ${callLabel(call)}.`;
+      let wires = Array.isArray(action.wires) ? [...new Set(action.wires)] : [];
+      if (!wires.every((i) => isWireIndex(tp, i) && !tp.wires[i].cut)) return "Probed wires must be uncut.";
+      if (wires.length && !wires.every((i) => tp.wires[i].stand === tp.wires[wires[0]].stand))
+        return "All probed wires must be on the same board.";
+      let name: string;
+      if (device === "twin") {
+        if (me.probeUsed) return "You already used your twin probe.";
+        if (wires.length !== 2) return "Pick two wires.";
+        me.probeUsed = true;
+        name = "the twin probe";
+      } else if (device === "triple" || device === "super") {
+        const card = device === "triple" ? 3 : 5;
+        const err = checkEquipment(state, card);
+        if (err) return err;
+        if (call === "yellow") return `${equipmentInfo(card).title} can't call yellow.`;
+        if (device === "triple" && wires.length !== 3) return "Pick three wires on one board.";
+        if (device === "super") {
+          if (wires.length < 1) return "Pick a teammate's board.";
+          const [s0, e0] = boardRange(tp, tp.wires[wires[0]].stand);
+          wires = [];
+          for (let i = s0; i < e0; i++) if (!tp.wires[i].cut) wires.push(i);
+        }
+        useEquipment(state, card);
+        name = `the ${equipmentInfo(card).title}`;
+      } else {
+        return "Unknown probe.";
+      }
+
+      const hits = wires.filter((i) => matches(tp.wires[i], call));
+      const intro = `${me.name} uses ${name} on ${wires.length} of ${tp.name}'s wires, calling ${callLabel(call)}.`;
       if (hits.length === 1) {
         tp.wires[hits[0]].cut = true;
         hl.push({ player: target, wire: hits[0], tone: "hit" });
         cutActorWire(state, actor, myWire, hl);
         log(state, `${intro} Hit! One is a ${wireLabel(tp.wires[hits[0]])}.`);
-      } else if (hits.length === 2) {
-        state.pending = { kind: "probeReveal", actor, target, wires: [a, b], call, actorWire: myWire };
-        log(state, `${intro} Both match! ${tp.name} chooses which one to reveal.`);
+      } else if (hits.length > 1) {
+        state.pending = { kind: "probeReveal", actor, target, wires: hits, call, actorWire: myWire };
+        log(state, `${intro} ${hits.length} match! ${tp.name} chooses which one to reveal.`);
       } else {
-        log(state, `${intro} Miss. The detonator ticks.`);
-        if (!addMistake(state)) {
-          const ca = wa.color;
-          const cb = wb.color;
-          if (ca === "red" && cb === "red") {
-            log(state, "Neither wire can take an info token.");
-          } else if (ca === "red" || cb === "red" || ca !== cb) {
-            // Exactly one candidate: the non-red one, or blue over yellow.
-            const pick = ca === "red" ? b : cb === "red" ? a : ca === "blue" ? a : b;
-            tp.wires[pick].info = tokenFor(tp.wires[pick]);
-            hl.push({ player: target, wire: pick, tone: "info" });
-            log(state, `An info token (${tp.wires[pick].info}) goes on one of the probed wires.`);
-          } else {
-            state.pending = { kind: "probeInfo", actor, target, wires: [a, b] };
-            log(state, `${tp.name} chooses which probed wire gets an info token.`);
-          }
-        }
+        log(state, `${intro} Miss.${state.stabilized ? "" : " The detonator ticks."}`);
+        if (!failedCut(state)) probeMissToken(state, actor, target, wires, hl);
       }
       state.highlights = hl;
       if (!state.pending) finishTurn(state);
@@ -458,6 +719,10 @@ export function viewFor(state: GameState, viewer: number): GameView {
     mistakes: state.mistakes,
     maxMistakes: state.maxMistakes,
     settings: state.settings,
+    equipment: state.equipment.map((e) => ({ ...e, unlocked: isUnlocked(blueCut, e.card) })),
+    labels: state.labels,
+    radar: state.radar,
+    stabilized: state.stabilized,
     // Never expose which own wire the actor used (it stays hidden unless the cut succeeds).
     pending: state.pending && state.pending.kind === "probeReveal" ? { ...state.pending, actorWire: undefined } : state.pending,
     log: state.log.slice(-60),

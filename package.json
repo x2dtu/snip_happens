@@ -11,6 +11,7 @@
     "start": "NODE_ENV=production tsx server.ts",
     "simulate": "tsx scripts/simulate.ts",
     "e2e": "tsx scripts/e2e.ts",
+    "test": "tsx scripts/equipment-test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

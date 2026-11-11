@@ -2,7 +2,10 @@
 import { chooseAction } from "../src/game/ai";
 import { actingPlayer, applyAction, createGame, PRESETS, viewFor } from "../src/game/engine";
 
-const games = Number(process.argv[2] ?? 200);
+const args = process.argv.slice(2);
+const games = Number(args.find((a) => !a.startsWith("--")) ?? 200);
+// --equipment: draw the maximum 6 equipment cards each game.
+const equipmentCount = args.includes("--equipment") ? 6 : 0;
 
 for (const preset of PRESETS) {
   for (let n = 2; n <= 5; n++) {
@@ -11,7 +14,7 @@ for (const preset of PRESETS) {
     let turnsTotal = 0;
     for (let g = 0; g < games; g++) {
       const seats = Array.from({ length: n }, (_, i) => ({ name: `AI${i + 1}`, kind: "ai" as const }));
-      const state = createGame(seats, preset.settings, g % n);
+      const state = createGame(seats, { ...preset.settings, equipmentCount }, g % n);
       let turns = 0;
       while (state.phase === "opening" || state.phase === "playing") {
         const who = actingPlayer(state);

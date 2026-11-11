@@ -150,3 +150,27 @@ code { background: #11131a; padding: 2px 6px; border-radius: 4px; }
   .log { position: static; max-height: 240px; }
   .wire { width: 32px; height: 50px; font-size: 0.9rem; }
 }
+
+/* equipment */
+.game { grid-template-areas: "top top" "tracker log" "stands log" "prompt log" "mine log" "equip log" "end log"; }
+.equipment { grid-area: equip; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.equip { background: var(--panel); border: 1px solid #2f3540; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.equip.locked { opacity: 0.6; }
+.equip.unlocked { border-color: var(--good); }
+.equip.used { opacity: 0.35; }
+.equip.active { box-shadow: 0 0 0 2px var(--accent); }
+.equip-head { display: flex; align-items: center; gap: 8px; }
+.equip-num { width: 26px; height: 26px; border-radius: 50%; background: var(--panel2); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; }
+.equip-status { margin-left: auto; font-size: 0.8rem; }
+.equip-desc { margin: 0; font-size: 0.78rem; color: #b8b6b1; white-space: pre-line; line-height: 1.35; }
+.equip-foot { display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; margin-top: auto; }
+.equip-foot button { padding: 4px 12px; }
+.choices { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.label-token { align-self: center; font-weight: 900; color: var(--accent); margin: 0 -3px; z-index: 2; font-size: 1.1rem; }
+.label-token.neq { color: #8fb4ff; }
+.radar { align-self: center; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; background: #2a2f39; white-space: nowrap; }
+.radar.yes { color: var(--good); }
+.radar.no { color: var(--muted); }
+@media (max-width: 900px) {
+  .game { grid-template-areas: "top" "tracker" "stands" "prompt" "mine" "equip" "end" "log"; }
+}

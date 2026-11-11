@@ -143,6 +143,17 @@ function assign(items: Item[], slots: Segment[]): number[] | null {
   return out;
 }
 
+/** Public facts from equipment (= / ≠ labels, radar answers), checked against sampled deals. */
+type Fact =
+  | { kind: "eq" | "neq"; a: number; b: number }
+  | { kind: "radar"; value: number; yes: boolean; ids: number[] };
+
+function buildFacts(view: GameView): Fact[] {
+  const facts: Fact[] = view.labels.map((l) => ({ kind: l.kind, a: l.a, b: l.b }));
+  for (const r of view.radar) for (const b of r.boards) facts.push({ kind: "radar", value: r.value, yes: b.yes, ids: b.wireIds });
+  return facts;
+}
+
 function sample(view: GameView): Model | null {
   const segs = buildSegments(view);
   // One slot per hidden wire; each slot carries its segment's bounds.
@@ -170,26 +181,22 @@ function sample(view: GameView): Model | null {
   ];
   const model: Model = { counts: new Map(), samples: [] };
 
-  for (let n = 0; n < SAMPLES; n++) {
-    for (let k = 0; items.length > 0 && k < SWAPS_PER_SAMPLE; k++) {
-      const i = Math.floor(rand() * items.length);
-      if (outside.length && rand() < 0.15 && items[i].color !== "blue") {
-        // Swap which yellow/red values are in the bomb.
-        const o = Math.floor(rand() * outside.length);
-        if (outside[o].color === items[i].color && fits(outside[o], slots[at[i]])) {
-          [items[i], outside[o]] = [outside[o], items[i]];
-        }
-        continue;
-      }
-      const j = Math.floor(rand() * items.length);
-      if (i !== j && fits(items[i], slots[at[j]]) && fits(items[j], slots[at[i]])) {
-        [at[i], at[j]] = [at[j], at[i]];
-      }
-    }
-    // Materialize: sort items within each segment onto its wires.
+  // Wires whose value is public or ours, by id; hidden ones resolve through the sampled deal.
+  const known = new Map<number, Item>();
+  const keyOf = new Map<number, string>();
+  view.players.forEach((p, pi) =>
+    p.wires.forEach((w, wi) => {
+      if (w.color) known.set(w.id, { value: w.value!, color: w.color });
+      else if (typeof w.info === "number") known.set(w.id, { value: w.info, color: "blue" });
+      else keyOf.set(w.id, `${pi}:${wi}`);
+    }),
+  );
+  const facts = buildFacts(view);
+
+  const materialize = () => {
     const bySeg = new Map<Segment, Item[]>();
     items.forEach((it, i) => {
-      const s = slots[at[i]];
+      const s = slots[at![i]];
       if (!bySeg.has(s)) bySeg.set(s, []);
       bySeg.get(s)!.push(it);
     });
@@ -205,6 +212,65 @@ function sample(view: GameView): Model | null {
         if (!w.cut && typeof w.info === "number") deal.set(`${pi}:${wi}`, { value: w.info, color: "blue" });
       });
     });
+    return deal;
+  };
+
+  const violations = (deal: Map<string, Item>) => {
+    const val = (id: number) => known.get(id) ?? deal.get(keyOf.get(id) ?? "");
+    let v = 0;
+    for (const f of facts) {
+      if (f.kind === "radar") {
+        const has = f.ids.some((id) => {
+          const it = val(id);
+          return it?.color === "blue" && it.value === f.value;
+        });
+        if (has !== f.yes) v++;
+      } else {
+        const a = val(f.a);
+        const b = val(f.b);
+        if (!a || !b) continue;
+        const same = a.color === b.color && (a.color !== "blue" || a.value === b.value);
+        if (same !== (f.kind === "eq")) v++;
+      }
+    }
+    return v;
+  };
+
+  let curV = facts.length ? violations(materialize()) : 0;
+  const consistent: Map<string, Item>[] = [];
+  const loose: Map<string, Item>[] = [];
+
+  for (let n = 0; n < SAMPLES; n++) {
+    for (let k = 0; items.length > 0 && k < SWAPS_PER_SAMPLE; k++) {
+      const i = Math.floor(rand() * items.length);
+      let undo: (() => void) | null = null;
+      if (outside.length && rand() < 0.15 && items[i].color !== "blue") {
+        // Swap which yellow/red values are in the bomb.
+        const o = Math.floor(rand() * outside.length);
+        if (outside[o].color === items[i].color && fits(outside[o], slots[at[i]])) {
+          [items[i], outside[o]] = [outside[o], items[i]];
+          undo = () => ([items[i], outside[o]] = [outside[o], items[i]]);
+        }
+      } else {
+        const j = Math.floor(rand() * items.length);
+        if (i !== j && fits(items[i], slots[at[j]]) && fits(items[j], slots[at[i]])) {
+          [at[i], at[j]] = [at[j], at[i]];
+          undo = () => ([at![i], at![j]] = [at![j], at![i]]);
+        }
+      }
+      // With equipment facts in play, never accept a move that breaks more of them.
+      if (undo && facts.length) {
+        const v = violations(materialize());
+        if (v > curV) undo();
+        else curV = v;
+      }
+    }
+    const deal = materialize();
+    (curV === 0 ? consistent : loose).push(deal);
+  }
+
+  const kept = consistent.length >= 30 ? consistent : [...consistent, ...loose];
+  for (const deal of kept) {
     for (const [key, it] of deal) {
       if (!model.counts.has(key)) model.counts.set(key, new Map());
       const c = model.counts.get(key)!;
@@ -276,34 +342,87 @@ export function chooseAction(view: GameView): Action | null {
   const own = (call: Call) => me.wires.findIndex((w) => !w.cut && matchesView(w, call));
   if (b && b.p > 0.999) return { type: "dualCut", target: b.target, wire: b.wire, myWire: own(b.call) };
 
-  if (!me.probeUsed && model) {
-    let bestProbe: { target: number; wires: [number, number]; call: Call; p: number } | null = null;
+  const ready = (card: number) => view.equipment.some((e) => e.card === card && e.unlocked && !e.used);
+
+  // Rescue equipment first: wind the detonator back when one more mistake would end it.
+  if (lastLife && ready(6) && view.mistakes > 0) return { type: "equipment", card: 6 };
+
+  type Option = { p: number; action: Action };
+  const options: Option[] = [];
+  const dualP = b ? b.p : 0;
+  const dualRed = b ? b.red : 0;
+  if (b) options.push({ p: dualP - (view.stabilized ? 0 : 6 * dualRed), action: { type: "dualCut", target: b.target, wire: b.wire, myWire: own(b.call) } });
+
+  const pAny = (pi: number, wires: number[], ck: string) => {
+    if (!model || !total) return 0;
+    let hits = 0;
+    for (const d of model.samples) if (wires.some((w) => outcomeKey(d.get(`${pi}:${w}`)!) === ck)) hits++;
+    return hits / total;
+  };
+
+  if (model) {
+    const blueCalls = calls.filter((c) => c !== "yellow");
     view.players.forEach((p, pi) => {
       if (pi === view.you) return;
-      for (let a = 0; a < p.wires.length; a++) {
-        if (p.wires[a].cut) continue;
-        for (let c = a + 1; c < p.wires.length; c++) {
-          if (p.wires[c].cut || p.wires[c].stand !== p.wires[a].stand) continue;
-          for (const call of calls) {
-            const ck = callKey(call);
-            let hits = 0;
-            for (const d of model.samples) {
-              if (outcomeKey(d.get(`${pi}:${a}`)!) === ck || outcomeKey(d.get(`${pi}:${c}`)!) === ck) hits++;
+      const uncut = p.wires.map((w, i) => ({ w, i })).filter(({ w }) => !w.cut);
+      const sameBoard = (a: number, c: number) => p.wires[a].stand === p.wires[c].stand;
+      // Twin probe: any two wires on one board.
+      if (!me.probeUsed) {
+        for (const { i: a } of uncut)
+          for (const { i: c } of uncut) {
+            if (c <= a || !sameBoard(a, c)) continue;
+            for (const call of calls) {
+              const pr = pAny(pi, [a, c], callKey(call));
+              options.push({ p: pr - 0.1, action: { type: "probe", device: "twin", target: pi, wires: [a, c], myWire: own(call) } });
             }
-            const pAny = hits / total;
-            if (!bestProbe || pAny > bestProbe.p) bestProbe = { target: pi, wires: [a, c], call, p: pAny };
+          }
+      }
+      // Triple Detector (3): three nearby wires on one board.
+      if (ready(3)) {
+        for (let x = 0; x + 2 < uncut.length; x++) {
+          const trio = [uncut[x].i, uncut[x + 1].i, uncut[x + 2].i];
+          if (!sameBoard(trio[0], trio[2])) continue;
+          for (const call of blueCalls) {
+            const pr = pAny(pi, trio, callKey(call));
+            options.push({ p: pr - 0.15, action: { type: "probe", device: "triple", target: pi, wires: trio, myWire: own(call) } });
           }
         }
       }
+      // Super Detector (5): a whole board.
+      if (ready(5)) {
+        for (let st = 0; st < p.stands; st++) {
+          const board = uncut.filter(({ w }) => w.stand === st).map(({ i }) => i);
+          if (!board.length) continue;
+          for (const call of blueCalls) {
+            const pr = pAny(pi, board, callKey(call));
+            options.push({ p: pr - 0.25, action: { type: "probe", device: "super", target: pi, wires: board, myWire: own(call) } });
+          }
+        }
+      }
+      // X or Y Ray (10): two values on one wire.
+      if (ready(10) && calls.length >= 2) {
+        for (const { i } of uncut) {
+          const key = `${pi}:${i}`;
+          const red = prob(key, "red");
+          for (let x = 0; x < calls.length; x++)
+            for (let y = x + 1; y < calls.length; y++) {
+              const pr = prob(key, callKey(calls[x])) + prob(key, callKey(calls[y]));
+              const score = pr - 0.15 - (view.stabilized ? 0 : 6 * red);
+              options.push({ p: score, action: { type: "dualCut", target: pi, wire: i, myWire: own(calls[x]), myWire2: own(calls[y]) } });
+            }
+        }
+      }
     });
-    const bp = bestProbe as { target: number; wires: [number, number]; call: Call; p: number } | null;
-    const dualP = b ? b.p : 0;
-    const dualRed = b ? b.red : 0;
-    if (bp && (dualP < 0.75 || dualRed > 0.02) && bp.p >= dualP + 0.1) {
-      return { type: "twinProbe", target: bp.target, wires: bp.wires, myWire: own(bp.call) };
-    }
   }
 
-  if (b) return { type: "dualCut", target: b.target, wire: b.wire, myWire: own(b.call) };
+  options.sort((x, y) => y.p - x.p);
+  const top = options[0];
+  // Shaky odds: steady the bomb first (the AI gets another action this turn).
+  if (top && !view.stabilized && ready(9) && (top.p < 0.6 || (lastLife && top.p < 0.9) || dualRed > 0.05)) {
+    return { type: "equipment", card: 9 };
+  }
+  // A plain dual cut that's already good doesn't need a gadget (the margins above also favor it).
+  if (b && dualP >= 0.75 && dualRed <= 0.02) return { type: "dualCut", target: b.target, wire: b.wire, myWire: own(b.call) };
+  if (top) return top.action;
   return null;
 }
